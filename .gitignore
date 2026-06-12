@@ -1,0 +1,8 @@
+# build output
+/build/
+*.buildinfo
+*.changes
+*.ddeb
+# editor
+*~
+.DS_Store

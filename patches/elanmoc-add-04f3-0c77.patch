@@ -1,0 +1,17 @@
+Description: elanmoc: add 04f3:0c77 ELAN:ARM-M4 sensor
+ Adds USB ID 04f3:0c77 to the elanmoc id_table. FW 0x312 speaks the
+ elanmoc protocol for init / FW / sensor-dim / enrolled-count
+ queries; capture works with the companion patch that guards the
+ reenroll opcode 0x40 ff 22 (unsupported by this FW).
+Author: local
+Last-Update: 2026-05-11
+--- a/libfprint/drivers/elanmoc/elanmoc.c
++++ b/libfprint/drivers/elanmoc/elanmoc.c
+@@ -25,6 +25,7 @@
+ G_DEFINE_TYPE (FpiDeviceElanmoc, fpi_device_elanmoc, FP_TYPE_DEVICE)
+ 
+ static const FpIdEntry id_table[] = {
++  { .vid = 0x04f3,  .pid = 0x0c77,  },
+   { .vid = 0x04f3,  .pid = 0x0c7d,  },
+   { .vid = 0x04f3,  .pid = 0x0c7e,  },
+   { .vid = 0x04f3,  .pid = 0x0c82,  },

@@ -1,0 +1,24 @@
+Description: elanmoc: skip reenroll-check when nothing is enrolled
+ MOC_ENROLL_REENROLL_CHECK sends opcode 0x40 ff 22 (check whether the
+ candidate template is a re-enroll). With curr_enrolled == 0 there is
+ nothing to re-enroll, so the command is pointless and the user-data
+ it carries is uninitialised. Some FWs (e.g. ELAN:ARM-M4 0x312) do not
+ implement this opcode and the read times out. Skip the state in that
+ case and advance directly to MOC_ENROLL_WAIT_FINGER.
+Author: local
+Last-Update: 2026-05-11
+--- a/libfprint/drivers/elanmoc/elanmoc.c
++++ b/libfprint/drivers/elanmoc/elanmoc.c
+@@ -444,6 +444,12 @@ elan_enroll_run_state (FpiSsm *ssm, FpDe
+       break;
+ 
+     case MOC_ENROLL_REENROLL_CHECK:
++      if (self->curr_enrolled == 0)
++        {
++          self->num_frames = 0;
++          fpi_ssm_next_state (ssm);
++          break;
++        }
+       data = fpi_ssm_get_data (ssm);
+       cmd_buf = elanmoc_compose_cmd (&elanmoc_check_reenroll_cmd);
+       memcpy (cmd_buf + 3, data, ELAN_USERDATE_SIZE);

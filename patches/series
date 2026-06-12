@@ -1,0 +1,6 @@
+elanmoc-add-04f3-0c77.patch
+elanmoc-skip-reenroll-check-when-empty.patch
+elanmoc-implement-clear-storage.patch
+elanmoc-0c77-correct-opcodes.patch
+elanmoc-0c77-normal-wbf-mode.patch
+elanmoc-0c77-skip-userid-on-match.patch

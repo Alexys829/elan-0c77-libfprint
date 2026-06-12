@@ -1,0 +1,94 @@
+Description: elanmoc: implement clear_storage via remove-all opcode
+ The chip already supports a "remove-all-enrolled" command (0x40 ff
+ 98) which the driver uses nowhere. Wire it up as the device-class
+ clear_storage handler so fprintd-delete -a, factory-reset flows and
+ the clear-storage example work. Necessary on FW revisions whose
+ verify/identify path is unimplemented: if curr_enrolled > 0 fprintd
+ does identify-first before enroll and stalls; clearing storage lets
+ the user re-enroll from a clean state.
+Author: local
+Last-Update: 2026-05-11
+--- a/libfprint/drivers/elanmoc/elanmoc.c
++++ b/libfprint/drivers/elanmoc/elanmoc.c
+@@ -963,6 +963,59 @@ elanmoc_identify (FpDevice *device)
+ }
+ 
+ static void
++elanmoc_clear_storage_cb (FpiDeviceElanmoc *self,
++                          uint8_t          *buffer_in,
++                          gsize             length_in,
++                          GError           *error)
++{
++  if (error)
++    {
++      fpi_device_clear_storage_complete (FP_DEVICE (self), error);
++      fpi_ssm_mark_failed (self->task_ssm, g_error_copy (error));
++      return;
++    }
++  if (buffer_in[0] != 0x40)
++    {
++      GError *e = fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
++                                            "remove-all: bad response");
++      fpi_device_clear_storage_complete (FP_DEVICE (self), g_error_copy (e));
++      fpi_ssm_mark_failed (self->task_ssm, e);
++      return;
++    }
++  self->curr_enrolled = 0;
++  fpi_device_clear_storage_complete (FP_DEVICE (self), NULL);
++  fpi_ssm_next_state (self->task_ssm);
++}
++
++static void
++elan_clear_storage_run_state (FpiSsm *ssm, FpDevice *dev)
++{
++  guint8 *cmd_buf = NULL;
++
++  switch (fpi_ssm_get_cur_state (ssm))
++    {
++    case CLEAR_STORAGE_SEND_CMD:
++      cmd_buf = elanmoc_compose_cmd (&elanmoc_remove_all_cmd);
++      elanmoc_get_cmd (dev, cmd_buf,
++                       elanmoc_remove_all_cmd.cmd_len,
++                       elanmoc_remove_all_cmd.resp_len, 0,
++                       elanmoc_clear_storage_cb);
++      break;
++    }
++}
++
++static void
++elanmoc_clear_storage (FpDevice *device)
++{
++  FpiDeviceElanmoc *self = FPI_DEVICE_ELANMOC (device);
++
++  self->task_ssm = fpi_ssm_new (device,
++                                elan_clear_storage_run_state,
++                                CLEAR_STORAGE_NUM_STATES);
++  fpi_ssm_start (self->task_ssm, task_ssm_done);
++}
++
++static void
+ task_ssm_init_done (FpiSsm *ssm, FpDevice *dev, GError *error)
+ {
+   FpiDeviceElanmoc *self = FPI_DEVICE_ELANMOC (dev);
+@@ -1184,6 +1237,7 @@ fpi_device_elanmoc_class_init (FpiDevice
+   dev_class->enroll = elanmoc_enroll;
+   dev_class->identify = elanmoc_identify;
+   dev_class->delete = elanmoc_delete_print;
++  dev_class->clear_storage = elanmoc_clear_storage;
+   dev_class->list = elanmoc_list;
+ 
+   fpi_device_class_auto_initialize_features (dev_class);
+--- a/libfprint/drivers/elanmoc/elanmoc.h
++++ b/libfprint/drivers/elanmoc/elanmoc.h
+@@ -161,6 +161,11 @@ enum delete_states {
+   DELETE_NUM_STATES,
+ };
+ 
++enum clear_storage_states {
++  CLEAR_STORAGE_SEND_CMD,
++  CLEAR_STORAGE_NUM_STATES,
++};
++
+ enum dev_init_states {
+   DEV_WAIT_READY,
+   DEV_SET_MODE,

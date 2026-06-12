@@ -1,0 +1,83 @@
+Description: elanmoc: use correct opcodes on ELAN:ARM-M4 0c77 (proto V2)
+ The 0c77 firmware (ASUS ExpertBook, FW 0x312) reuses the elanmoc
+ wire format but with a different opcode subset, confirmed against
+ the depau/elanpoc PoC that drives the same chip directly:
+   verify       : 0x40 ff 73  ->  0x40 ff 03
+   remove-all   : 0x40 ff 98  ->  0x40 ff 99
+ Tag 04f3:0c77 with driver_data = ELANMOC_PROTO_V2 and branch the
+ two affected command-sites; other PIDs keep the original opcodes.
+Author: local
+Last-Update: 2026-05-11
+--- a/libfprint/drivers/elanmoc/elanmoc.c
++++ b/libfprint/drivers/elanmoc/elanmoc.c
+@@ -25,7 +25,7 @@
+ G_DEFINE_TYPE (FpiDeviceElanmoc, fpi_device_elanmoc, FP_TYPE_DEVICE)
+ 
+ static const FpIdEntry id_table[] = {
+-  { .vid = 0x04f3,  .pid = 0x0c77,  },
++  { .vid = 0x04f3,  .pid = 0x0c77,  .driver_data = ELANMOC_PROTO_V2 },
+   { .vid = 0x04f3,  .pid = 0x0c7d,  },
+   { .vid = 0x04f3,  .pid = 0x0c7e,  },
+   { .vid = 0x04f3,  .pid = 0x0c82,  },
+@@ -821,8 +821,13 @@ elan_identify_run_state (FpiSsm *ssm, Fp
+ 
+     case IDENTIFY_WAIT_FINGER:
+       fp_info ("elanmoc %s VERIFY_WAIT_FINGER", __func__);
+-      cmd_buf = elanmoc_compose_cmd (&elanmoc_verify_cmd);
+-      elanmoc_get_cmd (dev, cmd_buf, elanmoc_verify_cmd.cmd_len, elanmoc_verify_cmd.resp_len, 1, elanmoc_identify_cb);
++      {
++        const struct elanmoc_cmd *vc =
++          (fpi_device_get_driver_data (dev) == ELANMOC_PROTO_V2)
++          ? &elanmoc_verify_cmd_v2 : &elanmoc_verify_cmd;
++        cmd_buf = elanmoc_compose_cmd (vc);
++        elanmoc_get_cmd (dev, cmd_buf, vc->cmd_len, vc->resp_len, 1, elanmoc_identify_cb);
++      }
+       break;
+     }
+ }
+@@ -995,11 +1000,14 @@ elan_clear_storage_run_state (FpiSsm *ss
+   switch (fpi_ssm_get_cur_state (ssm))
+     {
+     case CLEAR_STORAGE_SEND_CMD:
+-      cmd_buf = elanmoc_compose_cmd (&elanmoc_remove_all_cmd);
+-      elanmoc_get_cmd (dev, cmd_buf,
+-                       elanmoc_remove_all_cmd.cmd_len,
+-                       elanmoc_remove_all_cmd.resp_len, 0,
+-                       elanmoc_clear_storage_cb);
++      {
++        const struct elanmoc_cmd *rc =
++          (fpi_device_get_driver_data (dev) == ELANMOC_PROTO_V2)
++          ? &elanmoc_remove_all_cmd_v2 : &elanmoc_remove_all_cmd;
++        cmd_buf = elanmoc_compose_cmd (rc);
++        elanmoc_get_cmd (dev, cmd_buf, rc->cmd_len, rc->resp_len, 0,
++                         elanmoc_clear_storage_cb);
++      }
+       break;
+     }
+ }
+--- a/libfprint/drivers/elanmoc/elanmoc.h
++++ b/libfprint/drivers/elanmoc/elanmoc.h
+@@ -139,6 +139,23 @@ static const struct elanmoc_cmd elanmoc_
+   .resp_len = 2,
+ };
+ 
++/* Alternative opcodes used by older ARM-M4 FW revisions
++ * (e.g. 04f3:0c77 FW 0x312). Same wire format, different opcode bytes.
++ */
++#define ELANMOC_PROTO_V2 1
++
++static const struct elanmoc_cmd elanmoc_verify_cmd_v2 = {
++  .cmd_header = {0x40, 0xff, 0x03},
++  .cmd_len = 3,
++  .resp_len = 2,
++};
++
++static const struct elanmoc_cmd elanmoc_remove_all_cmd_v2 = {
++  .cmd_header = {0x40, 0xff, 0x99},
++  .cmd_len = 3,
++  .resp_len = 2,
++};
++
+ typedef void (*ElanCmdMsgCallback) (FpiDeviceElanmoc *self,
+                                     GError           *error);
+ 
