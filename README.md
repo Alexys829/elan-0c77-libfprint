@@ -1,5 +1,10 @@
 # libfprint support for the ELAN `04f3:0c77` fingerprint sensor
 
+![status: working](https://img.shields.io/badge/status-working-brightgreen)
+![license: LGPL-2.1+](https://img.shields.io/badge/license-LGPL--2.1%2B-blue)
+![tested: Ubuntu 26.04](https://img.shields.io/badge/tested-Ubuntu%2026.04-orange)
+[![latest release](https://img.shields.io/github/v/release/Alexys829/elan-0c77-libfprint)](https://github.com/Alexys829/elan-0c77-libfprint/releases/latest)
+
 Patches that make the **ELAN `04f3:0c77`** fingerprint reader
 ("ELAN:ARM-M4", Match-on-Chip, firmware `0x312` / 3.18) work on Linux. The reader
 ships in some **ASUS ExpertBook** laptops and is **not** supported by stock
@@ -12,6 +17,21 @@ and re-apply cleanly on other versions — see [Build from source](#build-from-s
 > No proprietary blob is required. There is **no** `libfprint-2-tod1-elan` package
 > (it has never existed in the Ubuntu archive); ignore any guide that tells you to
 > install one.
+
+## Compatibility
+
+| Item | Value |
+|---|---|
+| USB ID | `04f3:0c77` |
+| Chip | ELAN:ARM-M4, Match-on-Chip |
+| Firmware | `0x312` (3.18) |
+| Laptop | ASUS ExpertBook (and likely siblings with the same module) |
+| Tested on | Ubuntu 26.04, libfprint `1.95.1+tod1` |
+| Other versions | Use [Build from source](#build-from-source) — the patches re-apply cleanly |
+
+The prebuilt `.deb`s ([Releases](https://github.com/Alexys829/elan-0c77-libfprint/releases/latest)
+or [`prebuilt/`](prebuilt/)) match libfprint **1.95.1+tod1** only; on any other version,
+build from source.
 
 ---
 
@@ -49,11 +69,26 @@ On any other libfprint version, use [`./build.sh`](#build-from-source) instead.
 
 ## Install (prebuilt .deb)
 
-`install.sh` installs the two `.deb` files from [`prebuilt/`](prebuilt/), pins them
-with `apt-mark hold` so updates can't overwrite them, and restarts `fprintd`:
+**From a clone** — `install.sh` installs the two `.deb` files from
+[`prebuilt/`](prebuilt/), pins them with `apt-mark hold` so updates can't overwrite
+them, and restarts `fprintd`:
 
 ```bash
+git clone https://github.com/Alexys829/elan-0c77-libfprint.git
+cd elan-0c77-libfprint
 ./install.sh
+```
+
+**Without cloning** — grab the two packages from the
+[latest release](https://github.com/Alexys829/elan-0c77-libfprint/releases/latest)
+and install them directly:
+
+```bash
+gh release download -R Alexys829/elan-0c77-libfprint \
+  -p 'libfprint-2-2_*.deb' -p 'libfprint-2-tod1_*.deb'
+sudo dpkg -i libfprint-2-2_*.deb libfprint-2-tod1_*.deb
+sudo apt-mark hold libfprint-2-2 libfprint-2-tod1
+sudo systemctl restart fprintd
 ```
 
 The prebuilt packages only match libfprint **1.95.1+tod1**. If your version differs,
