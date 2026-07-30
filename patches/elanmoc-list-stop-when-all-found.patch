@@ -1,0 +1,30 @@
+Description: elanmoc: stop listing once every enrolled slot has been read
+ elanmoc_list() always walks every storage slot, even when the chip has
+ just reported how many are occupied in MOC_LIST_GET_ENROLLED. On a chip
+ with one finger enrolled that is ten get-userid round trips instead of
+ one, and fprintd runs this list on every failed match (see
+ fprintd/src/device.c, "verifying local storage"), i.e. right in the
+ login path. Stop as soon as curr_enrolled prints have been collected.
+ Counting the prints found rather than the slots queried keeps this
+ correct when the occupied slots are not contiguous.
+Author: local
+Last-Update: 2026-07-30
+Index: libfprint-1.95.1+tod1/libfprint/drivers/elanmoc/elanmoc.c
+===================================================================
+--- libfprint-1.95.1+tod1.orig/libfprint/drivers/elanmoc/elanmoc.c
++++ libfprint-1.95.1+tod1/libfprint/drivers/elanmoc/elanmoc.c
+@@ -585,7 +585,13 @@ elanmoc_get_userid_cb (FpiDeviceElanmoc
+       g_ptr_array_add (self->list_result, g_object_ref_sink (print));
+     }
+ 
+-  if(self->list_index <= ELAN_MAX_ENROLL_NUM)
++  /* The number of occupied slots is known from MOC_LIST_GET_ENROLLED, so stop
++   * as soon as they have all been read instead of always walking every slot.
++   * The slots need not be contiguous, hence counting what was found rather
++   * than how many were queried.
++   */
++  if(self->list_index <= ELAN_MAX_ENROLL_NUM &&
++     self->list_result->len < self->curr_enrolled)
+     {
+       fpi_ssm_jump_to_state (self->task_ssm, MOC_LIST_GET_FINGER);
+     }

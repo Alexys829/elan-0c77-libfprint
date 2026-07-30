@@ -1,0 +1,77 @@
+Description: elanmoc: don't fail a completed SSM when the user_id lookup fails
+ elanmoc_identify_cb() calls fpi_ssm_next_state() right after dispatching
+ the user_id lookup, which completes the two-state identify SSM and makes
+ task_ssm_done() clear task_ssm. The lookup reply therefore always arrives
+ with task_ssm == NULL, and every error path in elanmoc_match_report_cb()
+ hands that NULL to fpi_ssm_mark_failed(), aborting on
+ "assertion 'machine != NULL' failed" instead of reporting the error.
+ .
+ This is reachable on any elanmoc device whose user_id lookup fails (USB
+ error, unplug mid-verify, short frame); on the 0c77 it fired reliably,
+ because there the lookup used to time out every single time.
+ Complete the pending verify/identify directly when the SSM is gone.
+Author: local
+Last-Update: 2026-07-30
+Index: libfprint-1.95.1+tod1/libfprint/drivers/elanmoc/elanmoc.c
+===================================================================
+--- libfprint-1.95.1+tod1.orig/libfprint/drivers/elanmoc/elanmoc.c
++++ libfprint-1.95.1+tod1/libfprint/drivers/elanmoc/elanmoc.c
+@@ -689,6 +689,29 @@ enum verify_status {
+   RSP_VERIFY_STATES,
+ };
+ 
++/* elanmoc_identify_cb() advances the identify SSM as soon as it has dispatched
++ * the user_id lookup, so by the time the reply lands here the SSM has already
++ * completed and task_ssm_done() has cleared task_ssm. Failing the SSM would
++ * then abort on 'machine != NULL'; the pending action has to be completed
++ * directly instead.
++ */
++static void
++elanmoc_match_report_fail (FpiDeviceElanmoc *self, GError *error)
++{
++  FpDevice *device = FP_DEVICE (self);
++
++  if (self->task_ssm)
++    {
++      fpi_ssm_mark_failed (self->task_ssm, error);
++      return;
++    }
++
++  if (fpi_device_get_current_action (device) == FPI_DEVICE_ACTION_VERIFY)
++    fpi_device_verify_complete (device, error);
++  else
++    fpi_device_identify_complete (device, error);
++}
++
+ static void
+ elanmoc_match_report_cb (FpiDeviceElanmoc *self,
+                          uint8_t          *buffer_in,
+@@ -704,15 +727,15 @@ elanmoc_match_report_cb (FpiDeviceElanmo
+ 
+   if (error)
+     {
+-      fpi_ssm_mark_failed (self->task_ssm, error);
++      elanmoc_match_report_fail (self, error);
+       return;
+     }
+ 
+   if (buffer_in[0] != elanmoc_finger_info_hdr (device))
+     {
+-      fpi_ssm_mark_failed (self->task_ssm,
+-                           fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+-                                                     "Can't get response!!"));
++      elanmoc_match_report_fail (self,
++                                 fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
++                                                           "Can't get response!!"));
+       return;
+     }
+ 
+@@ -720,7 +743,7 @@ elanmoc_match_report_cb (FpiDeviceElanmo
+ 
+   if (!print)
+     {
+-      fpi_ssm_mark_failed (self->task_ssm, error);
++      elanmoc_match_report_fail (self, error);
+       return;
+     }
+ 

@@ -202,7 +202,7 @@ chip directly. Key differences handled by the patches:
 | verify | `40 ff 73` | `40 ff 03` |
 | remove-all (clear) | `40 ff 98` | `40 ff 99` |
 | re-enroll check | `40 ff 22` | not supported → skipped when empty |
-| get-userid after match | `40 ff 73` | not supported → skipped, report match directly |
+| read a slot's user_id | get-userid `43 21 <slot>` | finger-info **`40 ff 12 <slot>`** |
 | sensor mode at open / verify | set-mode `0x03` | set-mode **`0x00`** (normal WBF) |
 
 The two non-obvious fixes:
@@ -210,16 +210,28 @@ The two non-obvious fixes:
 1. **Normal WBF mode.** Windows leaves the chip in VBS WBF mode where the on-chip
    matcher refuses userspace verifies (`0xfd`). Sending set-mode (`40 ff 14`) value
    `0x00` puts it back into normal mode so enroll/verify match.
-2. **No get-userid after match.** After a successful match the stock driver issues a
-   get-userid command to learn which finger matched; this FW doesn't implement it, so
-   the read times out after 5 s and then crashes
-   (`fpi_ssm_mark_failed: assertion 'machine != NULL' failed`). For this device the
-   on-chip match is authoritative, so the result is reported directly.
+2. **finger-info instead of get-userid.** libfprint reads back which user_id occupies a
+   storage slot with `43 21 <slot>`, both when listing the chip's prints and after a
+   successful match. This FW never answers that command — on either endpoint — so the
+   read hits the 5 s timeout every time. It implements `40 ff 12 <slot>` instead, which
+   returns the same payload one byte further into the frame, behind a `0x40` header, and
+   answers immediately with length `0` for an empty slot.
 
-The PID is tagged `driver_data = ELANMOC_PROTO_V2`; every change is gated on that flag,
-so other ELAN PIDs are unaffected.
+   This matters more than it looks. `elanmoc_list()` is what fprintd runs after *every*
+   failed match to reconcile its storage (`Failed to query prints: transfer timed out`
+   in the journal), so the timeout lands squarely in the login path. And the lookup
+   after a match is what tells the driver *which* finger the chip matched: without it
+   the driver has to report a match against the first print in the gallery, which would
+   accept any finger enrolled on the chip — including another user's.
 
-See [`patches/`](patches/) for the six quilt patches (order in
+The PID is tagged `driver_data = ELANMOC_PROTO_V2`; every 0c77-specific change is gated
+on that flag, so other ELAN PIDs are unaffected. Three of the patches are not
+0c77-specific and fix upstream bugs reachable on any elanmoc device: the storage listing
+walking every slot even when the chip has said how many are occupied, the abort on
+`assertion 'machine != NULL' failed` when the user_id lookup fails, and the missing
+`->cancel` handler that leaves the sensor armed after a cancelled verify.
+
+See [`patches/`](patches/) for the nine quilt patches (order in
 [`patches/series`](patches/series)).
 
 ## Troubleshooting

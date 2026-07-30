@@ -3,4 +3,7 @@ elanmoc-skip-reenroll-check-when-empty.patch
 elanmoc-implement-clear-storage.patch
 elanmoc-0c77-correct-opcodes.patch
 elanmoc-0c77-normal-wbf-mode.patch
-elanmoc-0c77-skip-userid-on-match.patch
+elanmoc-list-stop-when-all-found.patch
+elanmoc-0c77-finger-info.patch
+elanmoc-match-report-without-ssm.patch
+elanmoc-cancel-tells-the-chip.patch
