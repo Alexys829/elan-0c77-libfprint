@@ -1,0 +1,78 @@
+Description: elanmoc: tell the chip to stop when an operation is cancelled
+ The driver sets no ->cancel handler, so cancelling a verify (which is
+ what happens whenever the user gives up on the finger and types the
+ password instead) only aborts the pending USB read: the sensor is never
+ told anything and stays armed, waiting for a finger, with a response it
+ will eventually hand to whatever reads that endpoint next.
+ .
+ Send the "above" command (40 ff 02) that the driver already uses at
+ close time. Measured on the 0c77: the chip does not acknowledge it, and
+ the pending verify then produces no response at all. Gated on
+ ELANMOC_PROTO_V2 because other FW revisions are documented to answer it
+ with two bytes, which nothing here would drain.
+Author: local
+Last-Update: 2026-07-30
+Index: libfprint-1.95.1+tod1/libfprint/drivers/elanmoc/elanmoc.c
+===================================================================
+--- libfprint-1.95.1+tod1.orig/libfprint/drivers/elanmoc/elanmoc.c
++++ libfprint-1.95.1+tod1/libfprint/drivers/elanmoc/elanmoc.c
+@@ -1297,6 +1297,51 @@ elanmoc_close (FpDevice *device)
+ }
+ 
+ static void
++elanmoc_cancel_cb (FpiUsbTransfer *transfer,
++                   FpDevice       *device,
++                   gpointer        user_data,
++                   GError         *error)
++{
++  if (error)
++    {
++      fp_dbg ("elanmoc %s: %s", __func__, error->message);
++      g_error_free (error);
++    }
++}
++
++static void
++elanmoc_cancel (FpDevice *device)
++{
++  FpiUsbTransfer *transfer = NULL;
++  guint8 *cmd_buf = NULL;
++
++  fp_info ("elanmoc %s ", __func__);
++
++  /* Cancelling only aborts the pending read; the chip is left waiting for a
++   * finger until something else happens to move it on. Tell it to stop.
++   *
++   * Restricted to ELANMOC_PROTO_V2, where this command was measured not to
++   * answer at all: other FW revisions are documented to acknowledge it with
++   * two bytes, which nothing would read here and which would then be picked
++   * up as the reply to the next command.
++   *
++   * Sent as a standalone transfer rather than through elanmoc_get_cmd(),
++   * because cancel runs while the command SSM of the aborted operation is
++   * still unwinding and that machinery keeps its state in self->cmd_ssm.
++   */
++  if (!elanmoc_is_proto_v2 (device))
++    return;
++
++  cmd_buf = elanmoc_compose_cmd (&elanmoc_above_cmd);
++  transfer = fpi_usb_transfer_new (device);
++  transfer->short_is_error = TRUE;
++  fpi_usb_transfer_fill_bulk_full (transfer, ELAN_EP_CMD_OUT, cmd_buf,
++                                   elanmoc_above_cmd.cmd_len, g_free);
++  fpi_usb_transfer_submit (transfer, ELAN_MOC_CMD_TIMEOUT, NULL,
++                           elanmoc_cancel_cb, NULL);
++}
++
++static void
+ fpi_device_elanmoc_init (FpiDeviceElanmoc *self)
+ {
+   G_DEBUG_HERE ();
+@@ -1318,6 +1363,7 @@ fpi_device_elanmoc_class_init (FpiDevice
+ 
+   dev_class->open = elanmoc_open;
+   dev_class->close = elanmoc_close;
++  dev_class->cancel = elanmoc_cancel;
+   dev_class->verify = elanmoc_identify;
+   dev_class->enroll = elanmoc_enroll;
+   dev_class->identify = elanmoc_identify;

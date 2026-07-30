@@ -202,7 +202,7 @@ chip directly. Key differences handled by the patches:
 | verify | `40 ff 73` | `40 ff 03` |
 | remove-all (clear) | `40 ff 98` | `40 ff 99` |
 | re-enroll check | `40 ff 22` | not supported → skipped when empty |
-| get-userid after match | `40 ff 73` | not supported → skipped, report match directly |
+| read a slot's user_id | get-userid `43 21 <slot>` | finger-info **`40 ff 12 <slot>`** |
 | sensor mode at open / verify | set-mode `0x03` | set-mode **`0x00`** (normal WBF) |
 
 The two non-obvious fixes:
@@ -210,16 +210,41 @@ The two non-obvious fixes:
 1. **Normal WBF mode.** Windows leaves the chip in VBS WBF mode where the on-chip
    matcher refuses userspace verifies (`0xfd`). Sending set-mode (`40 ff 14`) value
    `0x00` puts it back into normal mode so enroll/verify match.
-2. **No get-userid after match.** After a successful match the stock driver issues a
-   get-userid command to learn which finger matched; this FW doesn't implement it, so
-   the read times out after 5 s and then crashes
-   (`fpi_ssm_mark_failed: assertion 'machine != NULL' failed`). For this device the
-   on-chip match is authoritative, so the result is reported directly.
+2. **finger-info instead of get-userid.** libfprint reads back which user_id occupies a
+   storage slot with `43 21 <slot>`, both when listing the chip's prints and after a
+   successful match. This FW never answers that command — on either endpoint — so the
+   read hits the 5 s timeout every time. It implements `40 ff 12 <slot>` instead, which
+   returns the same payload one byte further into the frame, behind a `0x40` header, and
+   answers immediately with length `0` for an empty slot.
 
-The PID is tagged `driver_data = ELANMOC_PROTO_V2`; every change is gated on that flag,
-so other ELAN PIDs are unaffected.
+   This matters more than it looks. `elanmoc_list()` is what fprintd runs after *every*
+   failed match to reconcile its storage (`Failed to query prints: transfer timed out`
+   in the journal), so the timeout lands squarely in the login path. And the lookup
+   after a match is what tells the driver *which* finger the chip matched: without it
+   the driver has to report a match against the first print in the gallery, which would
+   accept any finger enrolled on the chip — including another user's.
 
-See [`patches/`](patches/) for the six quilt patches (order in
+The PID is tagged `driver_data = ELANMOC_PROTO_V2`; every 0c77-specific change is gated
+on that flag, so other ELAN PIDs are unaffected. Three of the patches are not
+0c77-specific and fix upstream bugs reachable on any elanmoc device: the storage listing
+walking every slot even when the chip has said how many are occupied, the abort on
+`assertion 'machine != NULL' failed` when the user_id lookup fails, and the missing
+`->cancel` handler that leaves the sensor armed after a cancelled verify.
+
+One firmware behaviour is worth knowing about, because it is visible in the logs
+and cannot be worked around: **after a failed match the chip refuses to say which
+user_id occupies which slot**. `finger-info` answers with a bare two-byte `40 ff`
+frame and stays that way until the next *successful* match — neither the abort
+command nor set-mode clears it. That looks deliberate for a match-on-chip sensor:
+enrolled identities are not handed to a caller that has not authenticated.
+
+fprintd runs a storage listing after every failed match, so a bad scan leaves a
+`Failed to query prints` line in the journal. That is expected and harmless: the
+listing fails in milliseconds and nothing is deleted. What the driver must never
+do is report a *short* list instead, because fprintd treats a successful listing
+as authoritative and deletes every locally stored print missing from it.
+
+See [`patches/`](patches/) for the eleven quilt patches (order in
 [`patches/series`](patches/series)).
 
 ## Troubleshooting
@@ -231,6 +256,15 @@ See [`patches/`](patches/) for the six quilt patches (order in
   the manual reset.
 - **`Device was already claimed`** — a previous verify process is stuck:
   `sudo systemctl restart fprintd`.
+- **`Failed to query prints` in the journal after a bad scan** — expected, see
+  [How it works](#how-it-works). The chip stops listing enrolled identities until
+  the next successful match. Nothing is lost and the next scan works normally.
+- **Several fingers enrolled, each one reported as another** — check which finger
+  you are actually pressing before suspecting the driver. `fprintd-list` prints
+  the fingers in alphabetical order, *not* in the order they were enrolled, which
+  makes it easy to mix them up when testing. The chip returns the matching slot
+  directly: with fingers enrolled in the order right index, left index, right
+  middle, they occupy slots 0, 1 and 2.
 - **Stopped working after `apt upgrade`** — the hold was dropped; reinstall the `.debs`
   and re-run `apt-mark hold`, or rebuild with `build.sh`.
 - **Sensor missing from `lsusb`** — enable it in the BIOS/UEFI.

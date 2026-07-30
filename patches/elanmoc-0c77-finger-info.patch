@@ -1,0 +1,195 @@
+Description: elanmoc: read the matched user_id with finger-info on 0c77
+ The ELAN:ARM-M4 0c77 (FW 0x312) does not implement get-userid
+ (43 21 <slot>): the command is never answered, on either the command
+ endpoint (0x83) or the MoC endpoint (0x84), so every read runs into the
+ 5s ELAN_MOC_CMD_TIMEOUT. That breaks two paths - elanmoc_list(), which
+ fprintd runs after every failed match to reconcile its storage, and the
+ lookup after a successful match.
+ .
+ The FW implements finger-info (40 ff 12 <slot>) instead, which carries
+ the same user_id payload one byte further into the frame behind a 0x40
+ header, and answers immediately for empty slots with a zero length.
+ Verified against the chip with depau/elanpoc: slot 0 returns
+ 'FP1-20260629-7-3B6325D6-alessandro', slots 1-9 return length 0, and the
+ command still answers when issued directly after a match.
+ .
+ Using it keeps the upstream logic intact, in particular the check that
+ the finger the chip matched is actually the one in the gallery: reporting
+ a match without that check would authenticate any finger enrolled on the
+ chip - including another user's - as the first print of the gallery.
+Author: local
+Last-Update: 2026-07-30
+Index: libfprint-1.95.1+tod1/libfprint/drivers/elanmoc/elanmoc.c
+===================================================================
+--- libfprint-1.95.1+tod1.orig/libfprint/drivers/elanmoc/elanmoc.c
++++ libfprint-1.95.1+tod1/libfprint/drivers/elanmoc/elanmoc.c
+@@ -69,6 +69,46 @@ elanmoc_compose_cmd (
+   return g_steal_pointer (&cmd_buf);
+ }
+ 
++static gboolean
++elanmoc_is_proto_v2 (FpDevice *dev)
++{
++  return fpi_device_get_driver_data (dev) == ELANMOC_PROTO_V2;
++}
++
++/* Compose the command that reads back which user_id occupies a storage slot.
++ * ELANMOC_PROTO_V2 chips never answer get-userid and use finger-info instead;
++ * in both variants the slot byte directly follows the header.
++ */
++static guint8 *
++elanmoc_compose_finger_info_cmd (FpDevice                  *dev,
++                                 guint8                     slot,
++                                 const struct elanmoc_cmd **cmd_info)
++{
++  guint8 *cmd_buf = NULL;
++
++  *cmd_info = elanmoc_is_proto_v2 (dev) ?
++              &elanmoc_finger_info_cmd_v2 : &elanmoc_get_userid_cmd;
++
++  cmd_buf = elanmoc_compose_cmd (*cmd_info);
++  cmd_buf[(*cmd_info)->cmd_len - 1] = slot;
++
++  return cmd_buf;
++}
++
++/* Header byte and user_id length offset of the corresponding response. */
++static guint8
++elanmoc_finger_info_hdr (FpDevice *dev)
++{
++  return elanmoc_is_proto_v2 (dev) ? 0x40 : 0x43;
++}
++
++static int
++elanmoc_userid_len_offset (FpDevice *dev)
++{
++  return elanmoc_is_proto_v2 (dev) ?
++         ELANMOC_USERID_LEN_OFFSET_V2 : ELANMOC_USERID_LEN_OFFSET;
++}
++
+ static void
+ elanmoc_cmd_ack_cb (FpiDeviceElanmoc *self,
+                     uint8_t          *buffer_in,
+@@ -497,8 +537,9 @@ create_print_from_response (FpiDeviceEla
+   g_autofree gchar *userid = NULL;
+   g_autofree gchar *userid_safe = NULL;
+   int userid_len = 0;
++  int len_offset = elanmoc_userid_len_offset (FP_DEVICE (self));
+ 
+-  if (buffer_in[0] != 0x43)
++  if (buffer_in[0] != elanmoc_finger_info_hdr (FP_DEVICE (self)))
+     {
+       g_propagate_error (error,
+                          fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+@@ -514,9 +555,9 @@ create_print_from_response (FpiDeviceEla
+       return NULL;
+     }
+ 
+-  userid_len = buffer_in[4];
++  userid_len = buffer_in[len_offset];
+ 
+-  if (userid_len > length_in - 5)
++  if (userid_len > length_in - (len_offset + 1))
+     {
+       g_propagate_error (error,
+                          fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+@@ -524,8 +565,8 @@ create_print_from_response (FpiDeviceEla
+       return NULL;
+     }
+ 
+-  userid = g_memdup2 (&buffer_in[5], userid_len);
+-  userid_safe = g_strndup ((const char *) &buffer_in[5], userid_len);
++  userid = g_memdup2 (&buffer_in[len_offset + 1], userid_len);
++  userid_safe = g_strndup ((const char *) &buffer_in[len_offset + 1], userid_len);
+   print = fp_print_new (FP_DEVICE (self));
+   uid = g_variant_new_fixed_array (G_VARIANT_TYPE_BYTE, userid, userid_len, 1);
+ 
+@@ -561,7 +602,7 @@ elanmoc_get_userid_cb (FpiDeviceElanmoc
+       return;
+     }
+ 
+-  if (buffer_in[0] != 0x43)
++  if (buffer_in[0] != elanmoc_finger_info_hdr (FP_DEVICE (self)))
+     {
+       fpi_ssm_mark_failed (self->task_ssm,
+                            fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+@@ -571,8 +612,11 @@ elanmoc_get_userid_cb (FpiDeviceElanmoc
+ 
+   self->list_index++;
+ 
+-  /* Skip 0xfe messages */
+-  if (buffer_in[1] != 0xfe)
++  /* Skip empty slots: get-userid flags them with 0xfe, finger-info reports a
++   * zero-length user_id instead.
++   */
++  if (buffer_in[1] != 0xfe &&
++      buffer_in[elanmoc_userid_len_offset (FP_DEVICE (self))] != 0)
+     {
+       print = create_print_from_response (self, buffer_in, length_in, &error);
+ 
+@@ -617,9 +661,12 @@ elan_list_run_state (FpiSsm *ssm, FpDevi
+       break;
+ 
+     case MOC_LIST_GET_FINGER:
+-      cmd_buf = elanmoc_compose_cmd (&elanmoc_get_userid_cmd);
+-      cmd_buf[2] = self->list_index;
+-      elanmoc_get_cmd (dev, cmd_buf, elanmoc_get_userid_cmd.cmd_len, elanmoc_get_userid_cmd.resp_len, 0, elanmoc_get_userid_cb);
++      {
++        const struct elanmoc_cmd *cmd_info = NULL;
++
++        cmd_buf = elanmoc_compose_finger_info_cmd (dev, self->list_index, &cmd_info);
++        elanmoc_get_cmd (dev, cmd_buf, cmd_info->cmd_len, cmd_info->resp_len, 0, elanmoc_get_userid_cb);
++      }
+       break;
+     }
+ }
+@@ -661,7 +708,7 @@ elanmoc_match_report_cb (FpiDeviceElanmo
+       return;
+     }
+ 
+-  if (buffer_in[0] != 0x43)
++  if (buffer_in[0] != elanmoc_finger_info_hdr (device))
+     {
+       fpi_ssm_mark_failed (self->task_ssm,
+                            fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+@@ -772,10 +819,11 @@ identify_status_report (FpiDeviceElanmoc
+ 
+     case RSP_VERIFY_OK:
+       {
++        const struct elanmoc_cmd *cmd_info = NULL;
++
+         fp_dbg ("Verify was successful! for user: %d mesg_code: %d ", data, verify_status_id);
+-        cmd_buf = elanmoc_compose_cmd (&elanmoc_get_userid_cmd);
+-        cmd_buf[2] = data;
+-        elanmoc_get_cmd (device, cmd_buf, elanmoc_get_userid_cmd.cmd_len, elanmoc_get_userid_cmd.resp_len, 0, elanmoc_match_report_cb);
++        cmd_buf = elanmoc_compose_finger_info_cmd (device, data, &cmd_info);
++        elanmoc_get_cmd (device, cmd_buf, cmd_info->cmd_len, cmd_info->resp_len, 0, elanmoc_match_report_cb);
+         break;
+       }
+     }
+Index: libfprint-1.95.1+tod1/libfprint/drivers/elanmoc/elanmoc.h
+===================================================================
+--- libfprint-1.95.1+tod1.orig/libfprint/drivers/elanmoc/elanmoc.h
++++ libfprint-1.95.1+tod1/libfprint/drivers/elanmoc/elanmoc.h
+@@ -156,6 +156,21 @@ static const struct elanmoc_cmd elanmoc_
+   .resp_len = 2,
+ };
+ 
++/* Replacement for get-userid (43 21 <slot>), which this FW never answers.
++ * Returns the same user_id payload, but the frame carries one extra byte:
++ *   43 21 : [0]=0x43 [1]=status [2..3]=uuid [4]=len   [5..]=user_id
++ *   40 ff 12: [0]=0x40 [1]=status [2..3]=uuid [4]=pad [5]=len [6..]=user_id
++ * An empty slot answers immediately with len == 0.
++ */
++static const struct elanmoc_cmd elanmoc_finger_info_cmd_v2 = {
++  .cmd_header = {0x40, 0xff, 0x12},
++  .cmd_len = 4,
++  .resp_len = 70,
++};
++
++#define ELANMOC_USERID_LEN_OFFSET   4
++#define ELANMOC_USERID_LEN_OFFSET_V2 5
++
+ typedef void (*ElanCmdMsgCallback) (FpiDeviceElanmoc *self,
+                                     GError           *error);
+ 
