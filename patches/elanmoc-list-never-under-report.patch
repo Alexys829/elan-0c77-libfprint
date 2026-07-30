@@ -21,7 +21,28 @@ Index: libfprint-1.95.1+tod1/libfprint/drivers/elanmoc/elanmoc.c
 ===================================================================
 --- libfprint-1.95.1+tod1.orig/libfprint/drivers/elanmoc/elanmoc.c
 +++ libfprint-1.95.1+tod1/libfprint/drivers/elanmoc/elanmoc.c
-@@ -595,6 +595,8 @@ elanmoc_get_userid_cb (FpiDeviceElanmoc
+@@ -539,6 +539,20 @@ create_print_from_response (FpiDeviceEla
+   int userid_len = 0;
+   int len_offset = elanmoc_userid_len_offset (FP_DEVICE (self));
+ 
++  /* The chip answers with a bare two-byte error frame in some states, so the
++   * length has to be checked before indexing into the payload. Note that
++   * length_in is unsigned: "userid_len > length_in - (len_offset + 1)" below
++   * wraps around instead of catching a short frame.
++   */
++  if (length_in <= (gsize) len_offset)
++    {
++      g_propagate_error (error,
++                         fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
++                                                   "Response too short (%" G_GSIZE_FORMAT " bytes) for a print!",
++                                                   length_in));
++      return NULL;
++    }
++
+   if (buffer_in[0] != elanmoc_finger_info_hdr (FP_DEVICE (self)))
+     {
+       g_propagate_error (error,
+@@ -595,6 +609,8 @@ elanmoc_get_userid_cb (FpiDeviceElanmoc
                         GError           *error)
  {
    FpPrint *print;
@@ -30,7 +51,7 @@ Index: libfprint-1.95.1+tod1/libfprint/drivers/elanmoc/elanmoc.c
  
    if (error)
      {
-@@ -610,13 +612,29 @@ elanmoc_get_userid_cb (FpiDeviceElanmoc
+@@ -610,13 +626,29 @@ elanmoc_get_userid_cb (FpiDeviceElanmoc
        return;
      }
  
@@ -64,7 +85,7 @@ Index: libfprint-1.95.1+tod1/libfprint/drivers/elanmoc/elanmoc.c
      {
        print = create_print_from_response (self, buffer_in, length_in, &error);
  
-@@ -639,6 +657,19 @@ elanmoc_get_userid_cb (FpiDeviceElanmoc
+@@ -639,6 +671,19 @@ elanmoc_get_userid_cb (FpiDeviceElanmoc
      {
        fpi_ssm_jump_to_state (self->task_ssm, MOC_LIST_GET_FINGER);
      }
