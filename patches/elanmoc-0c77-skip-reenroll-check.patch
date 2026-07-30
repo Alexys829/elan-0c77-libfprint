@@ -1,0 +1,28 @@
+Description: elanmoc: skip the re-enroll check entirely on 0c77
+ elanmoc-skip-reenroll-check-when-empty.patch skips MOC_ENROLL_REENROLL_CHECK
+ (40 ff 22) only when nothing is enrolled yet, on the assumption that the
+ command is merely pointless in that case. On this FW the command is not
+ implemented at all: with one finger already enrolled it is sent for real,
+ the read times out and the enroll fails with enroll-unknown-error. That
+ made it impossible to enroll a second finger. Skip it for
+ ELANMOC_PROTO_V2 regardless of the enrolled count.
+Author: local
+Last-Update: 2026-07-30
+Index: libfprint-1.95.1+tod1/libfprint/drivers/elanmoc/elanmoc.c
+===================================================================
+--- libfprint-1.95.1+tod1.orig/libfprint/drivers/elanmoc/elanmoc.c
++++ libfprint-1.95.1+tod1/libfprint/drivers/elanmoc/elanmoc.c
+@@ -484,7 +484,12 @@ elan_enroll_run_state (FpiSsm *ssm, FpDe
+       break;
+ 
+     case MOC_ENROLL_REENROLL_CHECK:
+-      if (self->curr_enrolled == 0)
++      /* This FW does not implement the re-enroll check (40 ff 22) at all, not
++       * just when the storage is empty: with a finger already enrolled the
++       * command is sent for real and the read times out, so enrolling a
++       * second finger could never succeed.
++       */
++      if (self->curr_enrolled == 0 || elanmoc_is_proto_v2 (dev))
+         {
+           self->num_frames = 0;
+           fpi_ssm_next_state (ssm);

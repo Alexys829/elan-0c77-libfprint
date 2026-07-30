@@ -1,0 +1,86 @@
+Description: elanmoc: never report a listing shorter than the chip's own count
+ fprintd treats a successful storage listing as authoritative: every locally
+ stored print missing from it is deleted (check_local_storage() ->
+ "Deleted stored finger %d for user %s as it is unknown to device"). A
+ listing that silently comes up short is therefore destructive, while a
+ failed listing is harmless - fprintd just logs and moves on.
+ .
+ Two ways the walk could come up short. A slot whose query returns a non-OK
+ status was treated as empty; on the 0c77 the chip answers finger-info with
+ an error status when it is queried right after a failed match, which is
+ exactly when fprintd runs the listing, so the result was an empty list and
+ every enrolled print got deleted. And reaching the end of the slots with
+ fewer prints than MOC_LIST_GET_ENROLLED reported means something was
+ missed regardless of the reason.
+ .
+ Treat a non-OK status as an error, and fail the listing when it does not
+ account for every finger the chip says it has.
+Author: local
+Last-Update: 2026-07-30
+Index: libfprint-1.95.1+tod1/libfprint/drivers/elanmoc/elanmoc.c
+===================================================================
+--- libfprint-1.95.1+tod1.orig/libfprint/drivers/elanmoc/elanmoc.c
++++ libfprint-1.95.1+tod1/libfprint/drivers/elanmoc/elanmoc.c
+@@ -595,6 +595,8 @@ elanmoc_get_userid_cb (FpiDeviceElanmoc
+                        GError           *error)
+ {
+   FpPrint *print;
++  gboolean slot_empty;
++  guint8 slot;
+ 
+   if (error)
+     {
+@@ -610,13 +612,29 @@ elanmoc_get_userid_cb (FpiDeviceElanmoc
+       return;
+     }
+ 
++  slot = self->list_index;
+   self->list_index++;
+ 
+-  /* Skip empty slots: get-userid flags them with 0xfe, finger-info reports a
+-   * zero-length user_id instead.
++  /* An empty slot answers with 0xfe (get-userid) or with a zero-length
++   * user_id (finger-info). Any other non-OK status is an error and must not
++   * be taken for an empty slot: reporting a short list is worse than
++   * reporting no list at all, because fprintd deletes every locally stored
++   * print it cannot find in it (check_local_storage() in fprintd).
+    */
+-  if (buffer_in[1] != 0xfe &&
+-      buffer_in[elanmoc_userid_len_offset (FP_DEVICE (self))] != 0)
++  slot_empty = buffer_in[1] == 0xfe ||
++               (buffer_in[1] == ELAN_MSG_OK &&
++                buffer_in[elanmoc_userid_len_offset (FP_DEVICE (self))] == 0);
++
++  if (!slot_empty && buffer_in[1] != ELAN_MSG_OK)
++    {
++      fpi_ssm_mark_failed (self->task_ssm,
++                           fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
++                                                     "Slot %d returned status 0x%02x while listing",
++                                                     slot, buffer_in[1]));
++      return;
++    }
++
++  if (!slot_empty)
+     {
+       print = create_print_from_response (self, buffer_in, length_in, &error);
+ 
+@@ -639,6 +657,19 @@ elanmoc_get_userid_cb (FpiDeviceElanmoc
+     {
+       fpi_ssm_jump_to_state (self->task_ssm, MOC_LIST_GET_FINGER);
+     }
++  else if (self->list_result->len < self->curr_enrolled)
++    {
++      /* Every slot was walked and the chip's own count was not reached, so
++       * this listing is incomplete. Failing is the safe outcome: fprintd
++       * treats a failed listing as "no information" but treats a successful
++       * one as authoritative and deletes the prints missing from it.
++       */
++      fpi_ssm_mark_failed (self->task_ssm,
++                           fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
++                                                     "Chip reports %d enrolled fingers but only %d could be read",
++                                                     self->curr_enrolled,
++                                                     self->list_result->len));
++    }
+   else
+     {
+       fpi_device_list_complete (FP_DEVICE (self), g_steal_pointer (&self->list_result), NULL);
