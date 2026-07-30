@@ -231,7 +231,20 @@ walking every slot even when the chip has said how many are occupied, the abort 
 `assertion 'machine != NULL' failed` when the user_id lookup fails, and the missing
 `->cancel` handler that leaves the sensor armed after a cancelled verify.
 
-See [`patches/`](patches/) for the nine quilt patches (order in
+One firmware behaviour is worth knowing about, because it is visible in the logs
+and cannot be worked around: **after a failed match the chip refuses to say which
+user_id occupies which slot**. `finger-info` answers with a bare two-byte `40 ff`
+frame and stays that way until the next *successful* match — neither the abort
+command nor set-mode clears it. That looks deliberate for a match-on-chip sensor:
+enrolled identities are not handed to a caller that has not authenticated.
+
+fprintd runs a storage listing after every failed match, so a bad scan leaves a
+`Failed to query prints` line in the journal. That is expected and harmless: the
+listing fails in milliseconds and nothing is deleted. What the driver must never
+do is report a *short* list instead, because fprintd treats a successful listing
+as authoritative and deletes every locally stored print missing from it.
+
+See [`patches/`](patches/) for the eleven quilt patches (order in
 [`patches/series`](patches/series)).
 
 ## Troubleshooting
@@ -243,6 +256,15 @@ See [`patches/`](patches/) for the nine quilt patches (order in
   the manual reset.
 - **`Device was already claimed`** — a previous verify process is stuck:
   `sudo systemctl restart fprintd`.
+- **`Failed to query prints` in the journal after a bad scan** — expected, see
+  [How it works](#how-it-works). The chip stops listing enrolled identities until
+  the next successful match. Nothing is lost and the next scan works normally.
+- **Several fingers enrolled, each one reported as another** — check which finger
+  you are actually pressing before suspecting the driver. `fprintd-list` prints
+  the fingers in alphabetical order, *not* in the order they were enrolled, which
+  makes it easy to mix them up when testing. The chip returns the matching slot
+  directly: with fingers enrolled in the order right index, left index, right
+  middle, they occupy slots 0, 1 and 2.
 - **Stopped working after `apt upgrade`** — the hold was dropped; reinstall the `.debs`
   and re-run `apt-mark hold`, or rebuild with `build.sh`.
 - **Sensor missing from `lsusb`** — enable it in the BIOS/UEFI.
